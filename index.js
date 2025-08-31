@@ -1,18 +1,19 @@
+// Import required modules
 import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } from "discord.js";
 import { DisTube } from "distube";
 import { YtDlpPlugin } from "@distube/yt-dlp";
 import dotenv from "dotenv";
 import process from "node:process";
-import ffmpegInstaller from "@ffmpeg-installer/ffmpeg"; // Import the ffmpeg installer package
+import ffmpegInstaller from "@ffmpeg-installer/ffmpeg"; // Import ffmpeg installer
 
 // Load environment variables
 dotenv.config();
 
-// Set the ffmpeg path from @ffmpeg-installer/ffmpeg (you can also set it explicitly)
-process.env.FFMPEG_PATH = '/nix/store/qi3dw2dz3gy5gz1mzlw7vm4r3fvla851-ffmpeg-full-7.1-bin/bin/ffmpeg';  // Explicitly set the correct path
+// Set ffmpeg path (you can set this manually if required)
+process.env.FFMPEG_PATH = '/nix/store/qi3dw2dz3gy5gz1mzlw7vm4r3fvla851-ffmpeg-full-7.1-bin/bin/ffmpeg';
 
-// --- Client Setup ---
-const client = new Client({
+// --- Initialize the Client ---
+const discordClient = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
@@ -20,30 +21,30 @@ const client = new Client({
   ]
 });
 
-// --- DisTube Setup ---
-const distube = new DisTube(client, {
+// --- Initialize DisTube for Music Management ---
+const musicPlayer = new DisTube(discordClient, {
   leaveOnStop: true,
   emitNewSongOnly: true,
   plugins: [new YtDlpPlugin()],
-  ffmpeg: process.env.FFMPEG_PATH  // Pass the correct ffmpeg path from environment variable
+  ffmpeg: process.env.FFMPEG_PATH  // Pass the ffmpeg path
 });
 
-// --- Presence / RPC ---
-client.once("clientReady", () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  client.user.setPresence({
+// --- Bot Presence / Status Update ---
+discordClient.once("clientReady", () => {
+  console.log(`✅ Bot logged in as ${discordClient.user.tag}`);
+  discordClient.user.setPresence({
     activities: [{ name: "🎶 Cursed Brothers Music", type: 2 }], // type 2 = Listening
     status: "online"
   });
 });
 
-// --- Slash Commands ---
-const commands = [
+// --- Register Slash Commands ---
+const botCommands = [
   new SlashCommandBuilder()
     .setName("play")
     .setDescription("Play a song by name or URL")
-    .addStringOption(opt =>
-      opt.setName("query").setDescription("Song name or URL").setRequired(true)
+    .addStringOption(option =>
+      option.setName("query").setDescription("Song name or URL").setRequired(true)
     ),
   new SlashCommandBuilder().setName("skip").setDescription("Skip current song"),
   new SlashCommandBuilder()
@@ -60,13 +61,13 @@ const commands = [
     .setDescription("Resume the paused song"),
   new SlashCommandBuilder()
     .setName("volume")
-    .setDescription("Set volume")
-    .addIntegerOption(opt =>
-      opt.setName("percent").setDescription("Volume (1-100)").setRequired(true)
+    .setDescription("Set volume level")
+    .addIntegerOption(option =>
+      option.setName("percent").setDescription("Volume (1-100)").setRequired(true)
     )
-].map(cmd => cmd.toJSON());
+].map(command => command.toJSON());
 
-// --- Deploy Commands ---
+// --- Deploy Slash Commands to Discord ---
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 (async () => {
   try {
@@ -75,123 +76,135 @@ const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
         process.env.CLIENT_ID,
         process.env.GUILD_ID
       ),
-      { body: commands }
+      { body: botCommands }
     );
-    console.log("✅ Slash commands registered!");
-  } catch (e) {
-    console.error("❌ Failed to register commands:", e);
+    console.log("✅ Slash commands registered successfully!");
+  } catch (error) {
+    console.error("❌ Failed to register commands:", error);
   }
 })();
 
-// --- Interaction Handler ---
-client.on("interactionCreate", async interaction => {
+// --- Handle Slash Commands Interactions ---
+discordClient.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
+
   const { commandName } = interaction;
 
+  // Play command: Play song by query or URL
   if (commandName === "play") {
     const query = interaction.options.getString("query");
-    const channel = interaction.member.voice.channel;
-    if (!channel)
-      return interaction.reply("❌ Voice channel join karo pehle.");
+    const voiceChannel = interaction.member.voice.channel;
+    if (!voiceChannel) return interaction.reply("❌ Please join a voice channel first.");
 
     try {
-      await interaction.deferReply();  // Defer the reply to prevent timeout
-      distube.play(channel, query, {
+      await interaction.deferReply();  // Prevent timeout while playing song
+      musicPlayer.play(voiceChannel, query, {
         textChannel: interaction.channel,
         member: interaction.member
       });
 
-      interaction.followUp(`🎶 Playing: **${query}**`);  // Send follow-up after song is played
+      interaction.followUp(`🎶 Now playing: **${query}**`);  // Send confirmation
     } catch (error) {
       console.error("Error in play command:", error);
-      interaction.followUp("❌ Something went wrong while playing the song.");
+      interaction.followUp("❌ An error occurred while trying to play the song.");
     }
   }
 
+  // Skip command: Skip the current song in the queue
   if (commandName === "skip") {
-    const q = distube.getQueue(interaction);
-    if (!q) return interaction.reply("❌ Queue empty hai.");
+    const queue = musicPlayer.getQueue(interaction);
+    if (!queue) return interaction.reply("❌ The queue is empty.");
+
     try {
-      await q.skip();
-      interaction.reply("⏭️ Skipped!");
+      await queue.skip();
+      interaction.reply("⏭️ Skipped the current song!");
     } catch (error) {
       console.error("Error skipping song:", error);
-      interaction.reply("❌ Failed to skip the song.");
+      interaction.reply("❌ Could not skip the song.");
     }
   }
 
+  // Stop command: Stop the music and clear the queue
   if (commandName === "stop") {
-    const q = distube.getQueue(interaction);
-    if (!q) return interaction.reply("❌ Kuch play hi nahi ho raha.");
+    const queue = musicPlayer.getQueue(interaction);
+    if (!queue) return interaction.reply("❌ No music is currently playing.");
+
     try {
-      q.stop();
-      interaction.reply("⏹️ Stopped and cleared queue!");
+      queue.stop();
+      interaction.reply("⏹️ Music stopped and queue cleared!");
     } catch (error) {
-      console.error("Error stopping song:", error);
-      interaction.reply("❌ Failed to stop the song.");
+      console.error("Error stopping music:", error);
+      interaction.reply("❌ Could not stop the music.");
     }
   }
 
+  // Queue command: Show the current song queue
   if (commandName === "queue") {
-    const q = distube.getQueue(interaction);
-    if (!q) return interaction.reply("❌ Queue empty hai.");
+    const queue = musicPlayer.getQueue(interaction);
+    if (!queue) return interaction.reply("❌ The queue is empty.");
+
     try {
       interaction.reply(
-        `📜 **Current Queue:**\n${q.songs
-          .map((song, i) => `${i === 0 ? "▶️" : `${i}.`} ${song.name} - ${song.formattedDuration}`)
+        `📜 **Current Queue:**\n${queue.songs
+          .map((song, index) => `${index === 0 ? "▶️" : `${index}.`} ${song.name} - ${song.formattedDuration}`)
           .join("\n")}`
       );
     } catch (error) {
       console.error("Error retrieving queue:", error);
-      interaction.reply("❌ Failed to fetch queue.");
+      interaction.reply("❌ Could not fetch the queue.");
     }
   }
 
+  // Pause command: Pause the current song
   if (commandName === "pause") {
-    const q = distube.getQueue(interaction);
-    if (!q) return interaction.reply("❌ Queue empty hai.");
+    const queue = musicPlayer.getQueue(interaction);
+    if (!queue) return interaction.reply("❌ The queue is empty.");
+
     try {
-      q.pause();
-      interaction.reply("⏸️ Paused!");
+      queue.pause();
+      interaction.reply("⏸️ Music paused!");
     } catch (error) {
       console.error("Error pausing song:", error);
-      interaction.reply("❌ Failed to pause the song.");
+      interaction.reply("❌ Could not pause the song.");
     }
   }
 
+  // Resume command: Resume the paused song
   if (commandName === "resume") {
-    const q = distube.getQueue(interaction);
-    if (!q) return interaction.reply("❌ Queue empty hai.");
+    const queue = musicPlayer.getQueue(interaction);
+    if (!queue) return interaction.reply("❌ The queue is empty.");
+
     try {
-      q.resume();
-      interaction.reply("▶️ Resumed!");
+      queue.resume();
+      interaction.reply("▶️ Music resumed!");
     } catch (error) {
       console.error("Error resuming song:", error);
-      interaction.reply("❌ Failed to resume the song.");
+      interaction.reply("❌ Could not resume the song.");
     }
   }
 
+  // Volume command: Set the volume level
   if (commandName === "volume") {
     const percent = interaction.options.getInteger("percent");
-    if (percent < 1 || percent > 100)
-      return interaction.reply("❌ Volume 1-100 ke beech me set karo.");
-    const q = distube.getQueue(interaction);
-    if (!q) return interaction.reply("❌ Queue empty hai.");
+    if (percent < 1 || percent > 100) return interaction.reply("❌ Volume must be between 1 and 100.");
+    const queue = musicPlayer.getQueue(interaction);
+    if (!queue) return interaction.reply("❌ The queue is empty.");
+
     try {
-      q.setVolume(percent);
+      queue.setVolume(percent);
       interaction.reply(`🔊 Volume set to **${percent}%**`);
     } catch (error) {
       console.error("Error setting volume:", error);
-      interaction.reply("❌ Failed to set volume.");
+      interaction.reply("❌ Could not set the volume.");
     }
   }
 });
 
-// --- DisTube Events ---
-distube
+// --- DisTube Event Handlers ---
+musicPlayer
   .on("playSong", (queue, song) => {
     queue.textChannel?.send(
-      `▶️ Now Playing: **${song.name}** - ${song.formattedDuration}`
+      `▶️ Now playing: **${song.name}** - ${song.formattedDuration}`
     );
   })
   .on("addSong", (queue, song) => {
@@ -201,5 +214,5 @@ distube
     channel?.send("⚠️ Error: " + error.message.slice(0, 200));
   });
 
-// --- Login ---
-client.login(process.env.DISCORD_TOKEN);
+// --- Bot Login ---
+discordClient.login(process.env.DISCORD_TOKEN);
